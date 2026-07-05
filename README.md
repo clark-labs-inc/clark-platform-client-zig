@@ -8,8 +8,29 @@ package will not compile as-is on older or newer Zig without porting.
 
 ## Adding as a dependency
 
-This package is not published/pinned to a URL yet. Until it is, add it as a
-local path dependency in your `build.zig.zon`:
+Source of truth is
+[clark-labs-inc/clark-platform-client-zig](https://github.com/clark-labs-inc/clark-platform-client-zig)
+(this directory is a mirror inside the Clark monorepo). Zig has no central
+package registry, so dependencies are pinned by git URL + content hash. Add
+it with:
+
+```sh
+zig fetch --save https://github.com/clark-labs-inc/clark-platform-client-zig/archive/<commit>.tar.gz
+```
+
+which writes the pinned entry into your `build.zig.zon` for you:
+
+```zig
+.dependencies = .{
+    .clark_platform = .{
+        .url = "https://github.com/clark-labs-inc/clark-platform-client-zig/archive/a1261f5d59abda765599513b1c4614dc0fd30ac2.tar.gz",
+        .hash = "clark_platform-0.1.0-iSyaHw82AQDxQKIel1zyHldSSSrZKghLzke0qV_EnsKl",
+    },
+},
+```
+
+Or, for local development against this monorepo directly, a path dependency
+works too:
 
 ```zig
 .dependencies = .{
