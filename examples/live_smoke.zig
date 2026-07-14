@@ -3,7 +3,7 @@
 //!
 //! Usage:
 //!   CLARK_API_BASE_URL=https://www.clarkchat.com \
-//!   CLARK_API_KEY=clk_live_xxx \
+//!   CLARK_API_KEY=ck_live_xxx \
 //!   CLARK_TEST_MODEL=openrouter:qwen35_flash \
 //!   zig build live-smoke
 const std = @import("std");

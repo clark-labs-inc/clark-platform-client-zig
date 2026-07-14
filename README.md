@@ -18,16 +18,8 @@ it with:
 zig fetch --save https://github.com/clark-labs-inc/clark-platform-client-zig/archive/<commit>.tar.gz
 ```
 
-which writes the pinned entry into your `build.zig.zon` for you:
-
-```zig
-.dependencies = .{
-    .clark_platform = .{
-        .url = "https://github.com/clark-labs-inc/clark-platform-client-zig/archive/a1261f5d59abda765599513b1c4614dc0fd30ac2.tar.gz",
-        .hash = "clark_platform-0.1.0-iSyaHw82AQDxQKIel1zyHldSSSrZKghLzke0qV_EnsKl",
-    },
-},
-```
+which writes both the pinned URL and its matching content hash into your
+`build.zig.zon`. Do not copy a hash from another release.
 
 Or, for local development against this monorepo directly, a path dependency
 works too:
@@ -88,7 +80,36 @@ pub fn main(init: std.process.Init) !void {
 `client.listResponseEvents(response_id, .{})` follow the same
 `ApiResult(T)` shape for `POST /v1/responses`, `GET /v1/responses/{id}`,
 and `GET /v1/responses/{id}/events`. `client.listModels()` and
-`client.listMemories(.{})` round it out.
+`client.listMemories(.{})` round out the core run surface.
+
+### Files and repository context
+
+Version 0.2 adds the platform resources that shipped after the original
+client: tenant-scoped file upload/management and Clark Code repository
+context lookup.
+
+```zig
+var uploaded = try client.createFile(.{
+    .filename = "notes.txt",
+    .bytes = notes_bytes,
+    .purpose = "assistants",
+    .mime_type = "text/plain",
+});
+defer uploaded.deinit();
+
+var files = try client.listFiles(.{ .limit = 100 });
+defer files.deinit();
+
+var context = try client.getRepositoryContext(repository_fingerprint, .{
+    .q = current_prompt,
+    .limit = 8,
+});
+defer context.deinit();
+```
+
+`client.getFile(id)` and `client.deleteFile(id)` complete the file lifecycle.
+Only the returned `clark_file_*` id should be sent in later gateway requests;
+raw provider file ids are deliberately never exposed.
 
 ### The `ApiResult(T)` / error model
 
@@ -150,9 +171,10 @@ the returned event's strings/`std.json.Value` tree are only valid until the
 *next* `next()` call (or `deinit()`). Copy out anything you need to keep
 (e.g. `allocator.dupe(u8, ...)`) before calling `next()` again.
 
-## The `clark-code` passthrough tier
+## The stateless model gateway
 
-`clark-code` is a fundamentally different mode: the entire request
+Any provider-qualified `author/model` id, plus the legacy `clark-code`
+compatibility alias, uses a fundamentally different mode: the entire request
 (`messages`, `tools`, `tool_choice`, including prior `assistant`
 messages with `tool_calls` and `tool` role messages) is forwarded verbatim
 to the upstream OpenAI-compatible provider, and the response is the raw
@@ -162,7 +184,7 @@ accidentally parse a passthrough response as a Clark object:
 
 ```zig
 var result = try client.createChatCompletionPassthrough(.{
-    .model = "clark-code",
+    .model = selected_provider_model,
     .messages = my_messages_json_value, // std.json.Value, forwarded as-is
     .tools = my_tools_json_value,
 });
@@ -176,9 +198,10 @@ switch (result) {
 }
 ```
 
-`client.streamChatCompletionPassthrough(...)` is the streaming twin, and
-also only reachable via `/v1/chat/completions` (the contract explicitly
-never allows `clark-code`+`tools` through `/v1/responses`).
+`client.streamChatCompletionPassthrough(...)` is the streaming twin. The
+provider-qualified Responses gateway is also available on `/v1/responses`,
+but its upstream-native event shapes are intentionally not parsed as Clark
+agent events by this 0.2 client.
 
 ## Judgment calls / scope limits
 
@@ -196,7 +219,7 @@ rather than guessing at a closed schema:
 - **Event/memory/passthrough payloads that the contract itself says
   "vary" are left as `std.json.Value`** rather than a hand-modeled closed
   set of structs: `ResponseStreamEvent.body`, `ResponseEvent.data`,
-  `MemoriesList.data[]`, and everything in the `clark-code` passthrough
+  `MemoriesList.data[]`, and everything in the stateless passthrough
   path. The contract's own text points at
   `crates/clark-services/src/platform_api/events.rs` for per-type
   projections if you need typed variants --- this client gives you the
@@ -244,8 +267,9 @@ socket responder, not `std.http.Server`, so fixtures have exact control
 over header/body bytes) bound to `127.0.0.1:18473` and points the client
 at it --- no real network access. It covers: bearer auth header
 propagation, `models.list` parsing, non-streaming `responses.create` and
-`chat.completions.create` parsing, the `clark-code` passthrough shape, the
-`memories.list` dynamic shape, the 4xx error envelope, and both SSE
+`chat.completions.create` parsing, the provider-gateway passthrough shape,
+the file lifecycle, repository context, the `memories.list` dynamic shape,
+the 4xx error envelope, and both SSE
 streaming shapes (named `response.*` events including
 `response.artifact.completed`/`response.usage.updated`, and anonymous
 `chat.completion.chunk` events ending on `data: [DONE]` with the
@@ -255,7 +279,7 @@ streaming shapes (named `response.*` events including
 
 ```sh
 CLARK_API_BASE_URL=https://www.clarkchat.com \
-CLARK_API_KEY=clk_live_xxxxxxxxxxxxxxxxxxxx \
+CLARK_API_KEY=ck_live_xxxxxxxxxxxxxxxxxxxx \
 CLARK_TEST_MODEL=openrouter:qwen35_flash \
 zig build live-smoke
 ```
@@ -274,7 +298,8 @@ the response body and this client's non-decompressing `response.reader()`
 feeds raw gzip bytes into `std.json.parseFromSlice`, which is a real bug
 this live test caught and fixed).
 
-`POST /v1/chat/completions` (and by extension `/v1/responses`) could **not**
+`POST /v1/chat/completions`, `/v1/responses`, and multipart `/v1/files`
+could **not**
 be verified live as of this writing. The client's outgoing JSON body is
 byte-verified correct in memory (confirmed via debug logging before send),
 and the offline `zig build test` suite --- which exercises the exact same

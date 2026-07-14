@@ -214,7 +214,7 @@ pub const ChatCompletionStream = struct {
     }
 };
 
-/// Iterator over the `clark-code` passthrough streaming shape. Chunks are
+/// Iterator over the provider-qualified passthrough streaming shape. Chunks are
 /// the raw upstream OpenAI-compatible JSON (see
 /// `types.PassthroughChatCompletionRequest`), left untyped for the same
 /// reason the non-streaming passthrough response is untyped.

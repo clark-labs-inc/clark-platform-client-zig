@@ -111,6 +111,23 @@ pub const Client = struct {
         url: []const u8,
         json_body: ?[]const u8,
     ) !ApiResult(T) {
+        return self.requestBodyJson(
+            T,
+            method,
+            url,
+            json_body,
+            if (json_body != null) "application/json" else null,
+        );
+    }
+
+    fn requestBodyJson(
+        self: *Client,
+        comptime T: type,
+        method: std.http.Method,
+        url: []const u8,
+        request_body: ?[]const u8,
+        content_type: ?[]const u8,
+    ) !ApiResult(T) {
         const auth_value = try self.authHeaderValue();
         defer self.allocator.free(auth_value);
 
@@ -119,7 +136,7 @@ pub const Client = struct {
         var req = try self.http.request(method, uri, .{
             .headers = .{
                 .authorization = .{ .override = auth_value },
-                .content_type = if (json_body != null) .{ .override = "application/json" } else .default,
+                .content_type = if (content_type) |value| .{ .override = value } else .default,
                 // Force uncompressed responses. `response.reader()` (used below)
                 // does not decompress — real upstreams (Cloudflare) happily
                 // gzip/zstd the body when `Accept-Encoding` advertises support,
@@ -131,7 +148,7 @@ pub const Client = struct {
         });
         defer req.deinit();
 
-        if (json_body) |body| {
+        if (request_body) |body| {
             const mutable_body = try self.allocator.dupe(u8, body);
             defer self.allocator.free(mutable_body);
             try req.sendBodyComplete(mutable_body);
@@ -177,6 +194,81 @@ pub const Client = struct {
         const url = try self.buildUrl("/v1/models");
         defer self.allocator.free(url);
         return self.requestJson(types.ModelsList, .GET, url, null);
+    }
+
+    // -------------------------------------------------------------
+    // POST/GET/DELETE /v1/files
+    // -------------------------------------------------------------
+
+    pub fn createFile(self: *Client, upload: types.FileUpload) !ApiResult(types.PlatformFile) {
+        const boundary = "----clark-platform-zig-boundary-0-2";
+        try validateMultipartHeaderValue(upload.filename);
+        if (upload.mime_type) |mime_type| try validateMultipartHeaderValue(mime_type);
+        if (std.mem.indexOf(u8, upload.bytes, boundary) != null or
+            std.mem.indexOf(u8, upload.purpose, boundary) != null)
+        {
+            return error.MultipartBoundaryCollision;
+        }
+
+        var body: Writer.Allocating = .init(self.allocator);
+        defer body.deinit();
+        try body.writer.print(
+            "--{s}\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\n{s}\r\n",
+            .{ boundary, upload.purpose },
+        );
+        try body.writer.print(
+            "--{s}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{s}\"\r\n",
+            .{ boundary, upload.filename },
+        );
+        if (upload.mime_type) |mime_type| {
+            try body.writer.print("Content-Type: {s}\r\n", .{mime_type});
+        }
+        try body.writer.writeAll("\r\n");
+        try body.writer.writeAll(upload.bytes);
+        try body.writer.print("\r\n--{s}--\r\n", .{boundary});
+
+        const content_type = try std.fmt.allocPrint(
+            self.allocator,
+            "multipart/form-data; boundary={s}",
+            .{boundary},
+        );
+        defer self.allocator.free(content_type);
+        const url = try self.buildUrl("/v1/files");
+        defer self.allocator.free(url);
+        return self.requestBodyJson(types.PlatformFile, .POST, url, body.written(), content_type);
+    }
+
+    pub fn listFiles(self: *Client, options: types.ListFilesOptions) !ApiResult(types.FilesList) {
+        const path = if (options.limit) |limit|
+            try std.fmt.allocPrint(self.allocator, "/v1/files?limit={d}", .{limit})
+        else
+            try self.allocator.dupe(u8, "/v1/files");
+        defer self.allocator.free(path);
+        const url = try self.buildUrl(path);
+        defer self.allocator.free(url);
+        return self.requestJson(types.FilesList, .GET, url, null);
+    }
+
+    pub fn getFile(self: *Client, file_id: []const u8) !ApiResult(types.PlatformFile) {
+        var encoded: Writer.Allocating = .init(self.allocator);
+        defer encoded.deinit();
+        try percentEncodeQueryValue(&encoded.writer, file_id);
+        const path = try std.fmt.allocPrint(self.allocator, "/v1/files/{s}", .{encoded.written()});
+        defer self.allocator.free(path);
+        const url = try self.buildUrl(path);
+        defer self.allocator.free(url);
+        return self.requestJson(types.PlatformFile, .GET, url, null);
+    }
+
+    pub fn deleteFile(self: *Client, file_id: []const u8) !ApiResult(types.DeletedFile) {
+        var encoded: Writer.Allocating = .init(self.allocator);
+        defer encoded.deinit();
+        try percentEncodeQueryValue(&encoded.writer, file_id);
+        const path = try std.fmt.allocPrint(self.allocator, "/v1/files/{s}", .{encoded.written()});
+        defer self.allocator.free(path);
+        const url = try self.buildUrl(path);
+        defer self.allocator.free(url);
+        return self.requestJson(types.DeletedFile, .DELETE, url, null);
     }
 
     // -------------------------------------------------------------
@@ -282,10 +374,11 @@ pub const Client = struct {
     }
 
     // -------------------------------------------------------------
-    // POST /v1/chat/completions (clark-code passthrough tier)
+    // POST /v1/chat/completions (stateless model gateway)
     // -------------------------------------------------------------
 
-    /// The `clark-code` passthrough tier returns the raw upstream
+    /// Provider-qualified `author/model` ids and the legacy `clark-code`
+    /// alias return the raw upstream
     /// OpenAI-compatible body, not a Clark `ChatCompletionObject` --- see
     /// the module doc on `types.PassthroughChatCompletionRequest`. Kept as
     /// a distinctly named method so callers can't accidentally parse a
@@ -346,9 +439,55 @@ pub const Client = struct {
         defer self.allocator.free(url);
         return self.requestJson(types.MemoriesList, .GET, url, null);
     }
+
+    // -------------------------------------------------------------
+    // GET /v1/code/repositories/{fingerprint}/context
+    // -------------------------------------------------------------
+
+    pub fn getRepositoryContext(
+        self: *Client,
+        fingerprint: []const u8,
+        options: types.RepositoryContextOptions,
+    ) !ApiResult(types.RepositoryContext) {
+        var encoded_fingerprint: Writer.Allocating = .init(self.allocator);
+        defer encoded_fingerprint.deinit();
+        try percentEncodeQueryValue(&encoded_fingerprint.writer, fingerprint);
+
+        var qs: Writer.Allocating = .init(self.allocator);
+        defer qs.deinit();
+        var first = true;
+        if (options.q) |value| {
+            try appendQueryStart(&qs.writer, &first);
+            try qs.writer.writeAll("q=");
+            try percentEncodeQueryValue(&qs.writer, value);
+        }
+        if (options.limit) |value| {
+            try appendQueryStart(&qs.writer, &first);
+            try qs.writer.print("limit={d}", .{value});
+        }
+
+        const path = try std.fmt.allocPrint(
+            self.allocator,
+            "/v1/code/repositories/{s}/context{s}",
+            .{ encoded_fingerprint.written(), qs.written() },
+        );
+        defer self.allocator.free(path);
+        const url = try self.buildUrl(path);
+        defer self.allocator.free(url);
+        return self.requestJson(types.RepositoryContext, .GET, url, null);
+    }
 };
 
 fn appendQueryStart(w: *Writer, first: *bool) !void {
     try w.writeByte(if (first.*) '?' else '&');
     first.* = false;
+}
+
+fn validateMultipartHeaderValue(value: []const u8) !void {
+    if (std.mem.indexOfScalar(u8, value, '\r') != null or
+        std.mem.indexOfScalar(u8, value, '\n') != null or
+        std.mem.indexOfScalar(u8, value, '"') != null)
+    {
+        return error.InvalidMultipartHeaderValue;
+    }
 }
