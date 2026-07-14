@@ -78,6 +78,51 @@ pub const ModelsList = struct {
 };
 
 // ---------------------------------------------------------------------
+// Files: POST/GET/DELETE /v1/files.
+// ---------------------------------------------------------------------
+
+pub const PlatformFile = struct {
+    id: []const u8,
+    object: []const u8,
+    @"type": []const u8,
+    filename: []const u8,
+    purpose: []const u8,
+    bytes: i64,
+    mime_type: ?[]const u8 = null,
+    size_bytes: i64,
+    downloadable: bool = false,
+    created_at: i64,
+    status: []const u8,
+    status_details: ?std.json.Value = null,
+};
+
+pub const FilesList = struct {
+    object: []const u8,
+    data: []const PlatformFile,
+    has_more: bool = false,
+    first_id: ?[]const u8 = null,
+    last_id: ?[]const u8 = null,
+    cursor: ?[]const u8 = null,
+};
+
+pub const DeletedFile = struct {
+    id: []const u8,
+    @"type": []const u8,
+    deleted: bool,
+};
+
+pub const FileUpload = struct {
+    filename: []const u8,
+    bytes: []const u8,
+    purpose: []const u8,
+    mime_type: ?[]const u8 = null,
+};
+
+pub const ListFilesOptions = struct {
+    limit: ?i64 = null,
+};
+
+// ---------------------------------------------------------------------
 // Usage / cost / artifacts (shared by ResponseObject and ChatCompletionObject).
 // ---------------------------------------------------------------------
 
@@ -253,6 +298,31 @@ pub const MemoriesList = struct {
 };
 
 // ---------------------------------------------------------------------
+// Clark Code repository context.
+// ---------------------------------------------------------------------
+
+pub const RepositoryCommitContext = struct {
+    oid: []const u8,
+    author_name: []const u8,
+    committed_at: []const u8,
+    subject: []const u8,
+    body: []const u8,
+};
+
+pub const RepositoryContext = struct {
+    fingerprint: []const u8,
+    canonical_remote: ?[]const u8 = null,
+    current_branch: ?[]const u8 = null,
+    default_branch: ?[]const u8 = null,
+    commits: []const RepositoryCommitContext = &.{},
+};
+
+pub const RepositoryContextOptions = struct {
+    q: ?[]const u8 = null,
+    limit: ?i64 = null,
+};
+
+// ---------------------------------------------------------------------
 // Request bodies.
 // ---------------------------------------------------------------------
 
@@ -296,8 +366,9 @@ pub const ChatCompletionCreateRequest = struct {
     metadata: ?std.json.Value = null,
 };
 
-/// `POST /v1/chat/completions` request body for the `clark-code`
-/// passthrough tier. Per the contract, the entire `messages` array
+/// `POST /v1/chat/completions` request body for a provider-qualified
+/// `author/model` or the legacy `clark-code` passthrough alias. Per the
+/// contract, the entire `messages` array
 /// (including prior `assistant` messages with `tool_calls` and `tool`
 /// role messages with `tool_call_id`) is forwarded verbatim to the
 /// upstream OpenAI-compatible provider, so `messages`/`tools`/`tool_choice`

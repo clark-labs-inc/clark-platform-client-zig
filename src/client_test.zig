@@ -148,6 +148,79 @@ test "listModels sends bearer auth and parses the models list" {
     try testing.expect(std.mem.indexOf(u8, fixtures[0].captured_head, "GET /v1/models") != null);
 }
 
+test "files create list retrieve and delete use the tenant-scoped file routes" {
+    const allocator = testing.allocator;
+    const file_body =
+        \\{"id":"clark_file_1","object":"file","type":"file","filename":"notes.txt","purpose":"assistants","bytes":5,"mime_type":"text/plain","size_bytes":5,"downloadable":false,"created_at":1782230459,"status":"processed","status_details":null}
+    ;
+    const list_body =
+        \\{"object":"list","data":[{"id":"clark_file_1","object":"file","type":"file","filename":"notes.txt","purpose":"assistants","bytes":5,"mime_type":"text/plain","size_bytes":5,"downloadable":false,"created_at":1782230459,"status":"processed","status_details":null}],"has_more":false,"first_id":"clark_file_1","last_id":"clark_file_1","cursor":null}
+    ;
+    const deleted_body =
+        \\{"id":"clark_file_1","type":"file_deleted","deleted":true}
+    ;
+    const create_resp = try httpResponse(allocator, "200 OK", "application/json", file_body);
+    defer allocator.free(create_resp);
+    const list_resp = try httpResponse(allocator, "200 OK", "application/json", list_body);
+    defer allocator.free(list_resp);
+    const get_resp = try httpResponse(allocator, "200 OK", "application/json", file_body);
+    defer allocator.free(get_resp);
+    const delete_resp = try httpResponse(allocator, "200 OK", "application/json", deleted_body);
+    defer allocator.free(delete_resp);
+
+    var fixtures = [_]Fixture{
+        .{ .response = create_resp },
+        .{ .response = list_resp },
+        .{ .response = get_resp },
+        .{ .response = delete_resp },
+    };
+    defer freeFixtures(allocator, &fixtures);
+
+    const Closure = struct {
+        fn run(client: *Client) anyerror!void {
+            var created = try client.createFile(.{
+                .filename = "notes.txt",
+                .bytes = "hello",
+                .purpose = "assistants",
+                .mime_type = "text/plain",
+            });
+            defer created.deinit();
+            switch (created) {
+                .ok => |parsed| try testing.expectEqualStrings("clark_file_1", parsed.value.id),
+                .api_error => return error.UnexpectedApiError,
+            }
+
+            var listed = try client.listFiles(.{ .limit = 10 });
+            defer listed.deinit();
+            switch (listed) {
+                .ok => |parsed| try testing.expectEqual(@as(usize, 1), parsed.value.data.len),
+                .api_error => return error.UnexpectedApiError,
+            }
+
+            var retrieved = try client.getFile("clark_file_1");
+            defer retrieved.deinit();
+            switch (retrieved) {
+                .ok => |parsed| try testing.expectEqualStrings("notes.txt", parsed.value.filename),
+                .api_error => return error.UnexpectedApiError,
+            }
+
+            var deleted = try client.deleteFile("clark_file_1");
+            defer deleted.deinit();
+            switch (deleted) {
+                .ok => |parsed| try testing.expect(parsed.value.deleted),
+                .api_error => return error.UnexpectedApiError,
+            }
+        }
+    };
+
+    try withMockServer(allocator, &fixtures, Closure.run);
+    try testing.expect(std.mem.indexOf(u8, fixtures[0].captured_head, "POST /v1/files") != null);
+    try testing.expect(std.mem.indexOf(u8, fixtures[0].captured_head, "multipart/form-data; boundary=") != null);
+    try testing.expect(std.mem.indexOf(u8, fixtures[1].captured_head, "GET /v1/files?limit=10") != null);
+    try testing.expect(std.mem.indexOf(u8, fixtures[2].captured_head, "GET /v1/files/clark_file_1") != null);
+    try testing.expect(std.mem.indexOf(u8, fixtures[3].captured_head, "DELETE /v1/files/clark_file_1") != null);
+}
+
 test "createResponse parses a non-streaming ResponseObject" {
     const allocator = testing.allocator;
     const body =
@@ -277,6 +350,42 @@ test "listMemories parses a dynamic memory record list" {
     try withMockServer(allocator, &fixtures, Closure.run);
 
     try testing.expect(std.mem.indexOf(u8, fixtures[0].captured_head, "GET /v1/memories?q=dark%20mode") != null);
+}
+
+test "getRepositoryContext encodes the fingerprint and search query" {
+    const allocator = testing.allocator;
+    const body =
+        \\{"fingerprint":"git:example/repo","canonical_remote":"https://example.com/repo.git","current_branch":"main","default_branch":"main","commits":[{"oid":"abc123","author_name":"Clark","committed_at":"2026-07-13T12:00:00Z","subject":"Add API","body":"Details"}]}
+    ;
+    const resp = try httpResponse(allocator, "200 OK", "application/json", body);
+    defer allocator.free(resp);
+
+    var fixtures = [_]Fixture{.{ .response = resp }};
+    defer freeFixtures(allocator, &fixtures);
+
+    const Closure = struct {
+        fn run(client: *Client) anyerror!void {
+            var result = try client.getRepositoryContext("git:example/repo", .{
+                .q = "file upload",
+                .limit = 4,
+            });
+            defer result.deinit();
+            switch (result) {
+                .ok => |parsed| {
+                    try testing.expectEqualStrings("git:example/repo", parsed.value.fingerprint);
+                    try testing.expectEqualStrings("abc123", parsed.value.commits[0].oid);
+                },
+                .api_error => return error.UnexpectedApiError,
+            }
+        }
+    };
+
+    try withMockServer(allocator, &fixtures, Closure.run);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        fixtures[0].captured_head,
+        "GET /v1/code/repositories/git%3Aexample%2Frepo/context?q=file%20upload&limit=4",
+    ) != null);
 }
 
 test "error envelope on 4xx is captured distinctly from transport errors" {
