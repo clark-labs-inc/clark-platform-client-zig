@@ -123,6 +123,90 @@ pub const ListFilesOptions = struct {
 };
 
 // ---------------------------------------------------------------------
+// Images: POST /v1/images/generations.
+// ---------------------------------------------------------------------
+
+pub const ImageGenerationRequest = struct {
+    prompt: []const u8,
+    input_images: []const []const u8 = &.{},
+};
+
+pub const ImageGenerationOptions = struct {
+    /// Optional retry-safe idempotency key sent as `Idempotency-Key`.
+    idempotency_key: ?[]const u8 = null,
+};
+
+pub const GeneratedImage = struct {
+    b64_json: []const u8,
+    media_type: []const u8,
+};
+
+pub const ImageGeneration = struct {
+    id: []const u8,
+    object: []const u8,
+    created_at: i64,
+    model: []const u8,
+    data: []const GeneratedImage = &.{},
+};
+
+// ---------------------------------------------------------------------
+// Organization knowledge: GET /v1/organization-knowledge/search.
+// ---------------------------------------------------------------------
+
+pub const OrganizationKnowledgeSearchOptions = struct {
+    query: ?[]const u8 = null,
+    organization_id: ?[]const u8 = null,
+    limit: ?i64 = null,
+};
+
+pub const OrganizationKnowledgeHit = struct {
+    claim_id: []const u8,
+    subject: []const u8,
+    predicate: []const u8,
+    object: []const u8,
+    fact_kind: []const u8,
+    confidence: f64,
+    status: []const u8,
+    valid_from: ?[]const u8 = null,
+    valid_to: ?[]const u8 = null,
+    observed_at: []const u8,
+    source_kind: []const u8,
+    source_display_name: []const u8,
+    evidence_locator: ?[]const u8 = null,
+    evidence_excerpt: ?[]const u8 = null,
+};
+
+pub const OrganizationKnowledgePacket = struct {
+    organization_id: []const u8,
+    query: []const u8,
+    hits: []const OrganizationKnowledgeHit = &.{},
+};
+
+pub const OrganizationKnowledgeSearchResponse = struct {
+    query: []const u8,
+    organizations: []const OrganizationKnowledgePacket = &.{},
+};
+
+// ---------------------------------------------------------------------
+// Artifacts: GET /v1/artifacts/{conversation_id}/{artifact_name}.
+// ---------------------------------------------------------------------
+
+pub const ArtifactDownloadOptions = struct {
+    download: bool = false,
+    range: ?[]const u8 = null,
+};
+
+/// Raw bytes downloaded from an artifact endpoint. Call `deinit` when done.
+pub const ArtifactDownload = struct {
+    allocator: std.mem.Allocator,
+    bytes: []u8,
+
+    pub fn deinit(self: *ArtifactDownload) void {
+        self.allocator.free(self.bytes);
+    }
+};
+
+// ---------------------------------------------------------------------
 // Usage / cost / artifacts (shared by ResponseObject and ChatCompletionObject).
 // ---------------------------------------------------------------------
 
@@ -386,8 +470,14 @@ pub const PassthroughChatCompletionRequest = struct {
     max_tokens: ?i64 = null,
     stop: ?std.json.Value = null,
     parallel_tool_calls: ?bool = null,
+    response_format: ?std.json.Value = null,
+    structured_outputs: ?bool = null,
+    reasoning: ?std.json.Value = null,
     /// "minimal" | "low" | "medium" | "high" | "xhigh"
     reasoning_effort: ?[]const u8 = null,
+    plugins: ?std.json.Value = null,
+    web_search_options: ?std.json.Value = null,
+    verbosity: ?[]const u8 = null,
     metadata: ?std.json.Value = null,
 };
 

@@ -26,6 +26,20 @@ pub fn ApiResult(comptime T: type) type {
     };
 }
 
+/// Result for an artifact response, whose successful body is arbitrary bytes
+/// instead of JSON. Call `deinit` on either branch when finished.
+pub const ArtifactDownloadResult = union(enum) {
+    ok: types.ArtifactDownload,
+    api_error: std.json.Parsed(types.ErrorEnvelope),
+
+    pub fn deinit(self: *ArtifactDownloadResult) void {
+        switch (self.*) {
+            .ok => |*download| download.deinit(),
+            .api_error => |parsed| parsed.deinit(),
+        }
+    }
+};
+
 fn isQueryUnreserved(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~';
 }
@@ -117,6 +131,7 @@ pub const Client = struct {
             url,
             json_body,
             if (json_body != null) "application/json" else null,
+            &.{},
         );
     }
 
@@ -127,6 +142,7 @@ pub const Client = struct {
         url: []const u8,
         request_body: ?[]const u8,
         content_type: ?[]const u8,
+        extra_headers: []const std.http.Header,
     ) !ApiResult(T) {
         const auth_value = try self.authHeaderValue();
         defer self.allocator.free(auth_value);
@@ -145,6 +161,7 @@ pub const Client = struct {
                 // content-encoding negotiation.
                 .accept_encoding = .{ .override = "identity" },
             },
+            .extra_headers = extra_headers,
         });
         defer req.deinit();
 
@@ -180,6 +197,49 @@ pub const Client = struct {
         }
 
         const parsed_err = try std.json.parseFromSlice(types.ErrorEnvelope, self.allocator, body_bytes, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        });
+        return .{ .api_error = parsed_err };
+    }
+
+    fn requestArtifactBytes(
+        self: *Client,
+        url: []const u8,
+        extra_headers: []const std.http.Header,
+    ) !ArtifactDownloadResult {
+        const auth_value = try self.authHeaderValue();
+        defer self.allocator.free(auth_value);
+        const uri = try std.Uri.parse(url);
+        var req = try self.http.request(.GET, uri, .{
+            .headers = .{
+                .authorization = .{ .override = auth_value },
+                .accept_encoding = .{ .override = "identity" },
+            },
+            .extra_headers = extra_headers,
+        });
+        defer req.deinit();
+        try req.sendBodiless();
+
+        var redirect_buf: [8 * 1024]u8 = undefined;
+        var response = try req.receiveHead(&redirect_buf);
+        const transfer_buf = try self.allocator.alloc(u8, self.io_buffer_bytes);
+        defer self.allocator.free(transfer_buf);
+        const body_reader = response.reader(transfer_buf);
+        var body: Writer.Allocating = .init(self.allocator);
+        defer body.deinit();
+        _ = body_reader.streamRemaining(&body.writer) catch |err| switch (err) {
+            error.ReadFailed => return response.bodyErr().?,
+            else => |e| return e,
+        };
+
+        if (response.head.status.class() == .success) {
+            return .{ .ok = .{
+                .allocator = self.allocator,
+                .bytes = try self.allocator.dupe(u8, body.written()),
+            } };
+        }
+        const parsed_err = try std.json.parseFromSlice(types.ErrorEnvelope, self.allocator, body.written(), .{
             .ignore_unknown_fields = true,
             .allocate = .alloc_always,
         });
@@ -235,7 +295,59 @@ pub const Client = struct {
         defer self.allocator.free(content_type);
         const url = try self.buildUrl("/v1/files");
         defer self.allocator.free(url);
-        return self.requestBodyJson(types.PlatformFile, .POST, url, body.written(), content_type);
+        return self.requestBodyJson(types.PlatformFile, .POST, url, body.written(), content_type, &.{});
+    }
+
+    // -------------------------------------------------------------
+    // POST /v1/images/generations
+    // -------------------------------------------------------------
+
+    pub fn createImageGeneration(
+        self: *Client,
+        request: types.ImageGenerationRequest,
+        options: types.ImageGenerationOptions,
+    ) !ApiResult(types.ImageGeneration) {
+        const url = try self.buildUrl("/v1/images/generations");
+        defer self.allocator.free(url);
+        const body = try std.json.Stringify.valueAlloc(self.allocator, request, .{});
+        defer self.allocator.free(body);
+        if (options.idempotency_key) |key| {
+            const headers = [_]std.http.Header{.{ .name = "idempotency-key", .value = key }};
+            return self.requestBodyJson(types.ImageGeneration, .POST, url, body, "application/json", &headers);
+        }
+        return self.requestBodyJson(types.ImageGeneration, .POST, url, body, "application/json", &.{});
+    }
+
+    // -------------------------------------------------------------
+    // GET /v1/artifacts/{conversation_id}/{artifact_name}
+    // -------------------------------------------------------------
+
+    pub fn downloadArtifact(
+        self: *Client,
+        conversation_id: []const u8,
+        artifact_name: []const u8,
+        options: types.ArtifactDownloadOptions,
+    ) !ArtifactDownloadResult {
+        var encoded_conversation: Writer.Allocating = .init(self.allocator);
+        defer encoded_conversation.deinit();
+        try percentEncodeQueryValue(&encoded_conversation.writer, conversation_id);
+        var encoded_name: Writer.Allocating = .init(self.allocator);
+        defer encoded_name.deinit();
+        try percentEncodeQueryValue(&encoded_name.writer, artifact_name);
+        const suffix: []const u8 = if (options.download) "?download=1" else "";
+        const path = try std.fmt.allocPrint(
+            self.allocator,
+            "/v1/artifacts/{s}/{s}{s}",
+            .{ encoded_conversation.written(), encoded_name.written(), suffix },
+        );
+        defer self.allocator.free(path);
+        const url = try self.buildUrl(path);
+        defer self.allocator.free(url);
+        if (options.range) |range| {
+            const headers = [_]std.http.Header{.{ .name = "range", .value = range }};
+            return self.requestArtifactBytes(url, &headers);
+        }
+        return self.requestArtifactBytes(url, &.{});
     }
 
     pub fn listFiles(self: *Client, options: types.ListFilesOptions) !ApiResult(types.FilesList) {
@@ -438,6 +550,42 @@ pub const Client = struct {
         const url = try self.buildUrl(path);
         defer self.allocator.free(url);
         return self.requestJson(types.MemoriesList, .GET, url, null);
+    }
+
+    // -------------------------------------------------------------
+    // GET /v1/organization-knowledge/search
+    // -------------------------------------------------------------
+
+    pub fn searchOrganizationKnowledge(
+        self: *Client,
+        options: types.OrganizationKnowledgeSearchOptions,
+    ) !ApiResult(types.OrganizationKnowledgeSearchResponse) {
+        var qs: Writer.Allocating = .init(self.allocator);
+        defer qs.deinit();
+        var first = true;
+        if (options.query) |value| {
+            try appendQueryStart(&qs.writer, &first);
+            try qs.writer.writeAll("query=");
+            try percentEncodeQueryValue(&qs.writer, value);
+        }
+        if (options.organization_id) |value| {
+            try appendQueryStart(&qs.writer, &first);
+            try qs.writer.writeAll("organization_id=");
+            try percentEncodeQueryValue(&qs.writer, value);
+        }
+        if (options.limit) |value| {
+            try appendQueryStart(&qs.writer, &first);
+            try qs.writer.print("limit={d}", .{value});
+        }
+        const path = try std.fmt.allocPrint(
+            self.allocator,
+            "/v1/organization-knowledge/search{s}",
+            .{qs.written()},
+        );
+        defer self.allocator.free(path);
+        const url = try self.buildUrl(path);
+        defer self.allocator.free(url);
+        return self.requestJson(types.OrganizationKnowledgeSearchResponse, .GET, url, null);
     }
 
     // -------------------------------------------------------------

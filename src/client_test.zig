@@ -108,7 +108,7 @@ fn freeFixtures(allocator: std.mem.Allocator, fixtures: []Fixture) void {
 // ---------------------------------------------------------------------
 
 const models_body =
-    \\{"object":"list","data":[{"id":"clark","object":"model","owned_by":"clark","clark":{"tier_id":"clark","label":"Clark","description":"desc","context_window_tokens":1048576,"max_output_tokens":65536,"pricing":{"currency":"USD","unit":"per_million_tokens","input":0.25,"output":1.5,"cache_write":0.08333,"cache_read":0.025},"capabilities":{"public_input_modalities":["text"],"model_input_modalities":["text","image"],"output_modalities":["text","artifact"],"features":["agent_tools","artifacts"],"public_file_upload":false},"model_options":[{"id":"openrouter:qwen35_flash","object":"model","owned_by":"clark","clark":{"tier_id":"openrouter","label":"OpenRouter"}}]}}]}
+    \\{"object":"list","data":[{"id":"clark","object":"model","owned_by":"clark","clark":{"tier_id":"clark","label":"Clark","description":"desc","context_window_tokens":1048576,"max_output_tokens":65536,"pricing":{"currency":"USD","unit":"per_million_tokens","input":0.25,"output":1.5,"cache_write":0.08333,"cache_read":0.025},"capabilities":{"public_input_modalities":["text"],"model_input_modalities":["text","image"],"output_modalities":["text","artifact"],"features":["agent_tools","artifacts"],"public_file_upload":false},"model_options":[{"id":"openrouter:qwen36_flash","object":"model","owned_by":"clark","clark":{"tier_id":"openrouter","label":"OpenRouter"}}]}}]}
 ;
 
 fn httpResponse(allocator: std.mem.Allocator, status_line: []const u8, content_type: []const u8, body: []const u8) ![]u8 {
@@ -135,7 +135,7 @@ test "listModels sends bearer auth and parses the models list" {
                     try testing.expectEqualStrings("Clark", parsed.value.data[0].clark.label);
                     try testing.expectEqual(@as(f64, 0.25), parsed.value.data[0].clark.pricing.?.input);
                     try testing.expectEqual(@as(usize, 1), parsed.value.data[0].clark.model_options.len);
-                    try testing.expectEqualStrings("openrouter:qwen35_flash", parsed.value.data[0].clark.model_options[0].id);
+                    try testing.expectEqualStrings("openrouter:qwen36_flash", parsed.value.data[0].clark.model_options[0].id);
                 },
                 .api_error => return error.UnexpectedApiError,
             }
@@ -221,6 +221,72 @@ test "files create list retrieve and delete use the tenant-scoped file routes" {
     try testing.expect(std.mem.indexOf(u8, fixtures[3].captured_head, "DELETE /v1/files/clark_file_1") != null);
 }
 
+test "image generation, organization knowledge, and artifact downloads use current routes" {
+    const allocator = testing.allocator;
+    const image_body =
+        \\{"id":"imggen_1","object":"image_generation","created_at":1,"model":"google/gemini-3.1-flash-lite-image","data":[{"b64_json":"aGVsbG8=","media_type":"image/png"}]}
+    ;
+    const knowledge_body =
+        \\{"query":"checkout","organizations":[{"organization_id":"org-1","query":"checkout","hits":[{"claim_id":"claim-1","subject":"Checkout","predicate":"changed_by","object":"New payment flow","fact_kind":"decision","confidence":0.92,"status":"active","valid_from":null,"valid_to":null,"observed_at":"2026-07-21T00:00:00Z","source_kind":"document","source_display_name":"Launch notes","evidence_locator":null,"evidence_excerpt":null}]}]}
+    ;
+    const artifact_body = "pdf";
+    const image_resp = try httpResponse(allocator, "200 OK", "application/json", image_body);
+    defer allocator.free(image_resp);
+    const knowledge_resp = try httpResponse(allocator, "200 OK", "application/json", knowledge_body);
+    defer allocator.free(knowledge_resp);
+    const artifact_resp = try httpResponse(allocator, "206 Partial Content", "application/pdf", artifact_body);
+    defer allocator.free(artifact_resp);
+
+    var fixtures = [_]Fixture{
+        .{ .response = image_resp },
+        .{ .response = knowledge_resp },
+        .{ .response = artifact_resp },
+    };
+    defer freeFixtures(allocator, &fixtures);
+
+    const Closure = struct {
+        fn run(client: *Client) anyerror!void {
+            var image = try client.createImageGeneration(.{
+                .prompt = "Make this a sunset.",
+                .input_images = &.{"data:image/png;base64,aGVsbG8="},
+            }, .{ .idempotency_key = "image-retry-1" });
+            defer image.deinit();
+            switch (image) {
+                .ok => |parsed| try testing.expectEqualStrings("image/png", parsed.value.data[0].media_type),
+                .api_error => return error.UnexpectedApiError,
+            }
+
+            var knowledge = try client.searchOrganizationKnowledge(.{
+                .query = "checkout",
+                .organization_id = "org-1",
+                .limit = 8,
+            });
+            defer knowledge.deinit();
+            switch (knowledge) {
+                .ok => |parsed| try testing.expectEqualStrings("changed_by", parsed.value.organizations[0].hits[0].predicate),
+                .api_error => return error.UnexpectedApiError,
+            }
+
+            var artifact = try client.downloadArtifact("conv-1", "nested/report.pdf", .{
+                .download = true,
+                .range = "bytes=0-2",
+            });
+            defer artifact.deinit();
+            switch (artifact) {
+                .ok => |download| try testing.expectEqualStrings("pdf", download.bytes),
+                .api_error => return error.UnexpectedApiError,
+            }
+        }
+    };
+
+    try withMockServer(allocator, &fixtures, Closure.run);
+    try testing.expect(std.mem.indexOf(u8, fixtures[0].captured_head, "POST /v1/images/generations") != null);
+    try testing.expect(std.mem.indexOf(u8, fixtures[0].captured_head, "idempotency-key: image-retry-1") != null);
+    try testing.expect(std.mem.indexOf(u8, fixtures[1].captured_head, "GET /v1/organization-knowledge/search?query=checkout&organization_id=org-1&limit=8") != null);
+    try testing.expect(std.mem.indexOf(u8, fixtures[2].captured_head, "GET /v1/artifacts/conv-1/nested%2Freport.pdf?download=1") != null);
+    try testing.expect(std.mem.indexOf(u8, fixtures[2].captured_head, "range: bytes=0-2") != null);
+}
+
 test "createResponse parses a non-streaming ResponseObject" {
     const allocator = testing.allocator;
     const body =
@@ -302,6 +368,9 @@ test "createChatCompletionPassthrough returns raw upstream JSON untouched" {
                 .model = "clark-code",
                 .messages = std.json.Value{ .array = std.json.Array.init(testing.allocator) },
                 .tools = std.json.Value{ .array = std.json.Array.init(testing.allocator) },
+                .response_format = std.json.Value{ .object = .{} },
+                .structured_outputs = true,
+                .plugins = std.json.Value{ .array = std.json.Array.init(testing.allocator) },
             });
             defer result.deinit();
             switch (result) {

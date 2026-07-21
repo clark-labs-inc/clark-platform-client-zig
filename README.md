@@ -111,6 +111,28 @@ defer context.deinit();
 Only the returned `clark_file_*` id should be sent in later gateway requests;
 raw provider file ids are deliberately never exposed.
 
+### Images, organization knowledge, and artifacts
+
+```zig
+var image = try client.createImageGeneration(.{
+    .prompt = "Turn this into a warm editorial illustration.",
+    .input_images = &.{"data:image/png;base64,iVBORw0KGgo..."},
+}, .{ .idempotency_key = "image-retry-1" });
+defer image.deinit();
+
+var knowledge = try client.searchOrganizationKnowledge(.{
+    .query = "authentication changes",
+    .limit = 8,
+});
+defer knowledge.deinit();
+
+var artifact = try client.downloadArtifact("conversation-id", "report.pdf", .{
+    .download = true,
+    .range = "bytes=0-1023",
+});
+defer artifact.deinit();
+```
+
 ### The `ApiResult(T)` / error model
 
 Every non-streaming call returns `!ApiResult(T)`:
@@ -280,7 +302,7 @@ streaming shapes (named `response.*` events including
 ```sh
 CLARK_API_BASE_URL=https://www.clarkchat.com \
 CLARK_API_KEY=ck_live_xxxxxxxxxxxxxxxxxxxx \
-CLARK_TEST_MODEL=openrouter:qwen35_flash \
+CLARK_TEST_MODEL=openrouter:qwen36_flash \
 zig build live-smoke
 ```
 

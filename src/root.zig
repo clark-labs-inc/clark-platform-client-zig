@@ -8,6 +8,7 @@ pub const sse = @import("sse.zig");
 
 pub const Client = client_mod.Client;
 pub const ApiResult = client_mod.ApiResult;
+pub const ArtifactDownloadResult = client_mod.ArtifactDownloadResult;
 
 pub const StreamOpenResult = stream_mod.StreamOpenResult;
 pub const ResponseStream = stream_mod.ResponseStream;
