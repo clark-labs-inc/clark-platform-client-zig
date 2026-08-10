@@ -302,7 +302,7 @@ streaming shapes (named `response.*` events including
 ```sh
 CLARK_API_BASE_URL=https://www.clarkchat.com \
 CLARK_API_KEY=ck_live_xxxxxxxxxxxxxxxxxxxx \
-CLARK_TEST_MODEL=openrouter:qwen36_flash \
+CLARK_TEST_MODEL=openrouter:qwen37_flash \
 zig build live-smoke
 ```
 

@@ -18,10 +18,12 @@ pub const ErrorDetail = struct {
     @"type": []const u8,
     param: ?[]const u8 = null,
     code: []const u8,
+    response_id: ?[]const u8 = null,
 };
 
 pub const ErrorEnvelope = struct {
     @"error": ErrorDetail,
+    response_id: ?[]const u8 = null,
 };
 
 // ---------------------------------------------------------------------
@@ -56,6 +58,12 @@ pub const ClarkTierInfo = struct {
     pricing: ?Pricing = null,
     capabilities: ?Capabilities = null,
     model_options: []const ModelOption = &.{},
+    execution_mode: ?[]const u8 = null,
+    tool_owner: ?[]const u8 = null,
+    response_lifecycle: ?[]const u8 = null,
+    retrievable: ?bool = null,
+    idempotency: ?[]const u8 = null,
+    rate_card_revision: ?[]const u8 = null,
 };
 
 pub const ModelOption = struct {
@@ -75,6 +83,31 @@ pub const ModelEntry = struct {
 pub const ModelsList = struct {
     object: []const u8,
     data: []const ModelEntry,
+    rate_card_revision: ?[]const u8 = null,
+    readiness: ?std.json.Value = null,
+};
+
+pub const UsageEstimateRequest = struct {
+    model: []const u8,
+    tier_model_id: ?[]const u8 = null,
+    input_tokens: u64,
+    output_tokens: u64 = 0,
+    cache_read_tokens: u64 = 0,
+    cache_write_tokens: u64 = 0,
+};
+
+pub const UsageEstimate = struct {
+    object: []const u8,
+    requested_model: []const u8,
+    resolved_model: []const u8,
+    execution_mode: []const u8,
+    tool_owner: []const u8,
+    currency: []const u8,
+    estimated_cost_usd: f64,
+    rate_card_revision: []const u8,
+    token_basis: std.json.Value,
+    rates_per_million: std.json.Value,
+    disclaimer: []const u8,
 };
 
 // ---------------------------------------------------------------------
@@ -245,12 +278,25 @@ pub const Artifact = struct {
     download_url: []const u8,
 };
 
+pub const AgentToolPolicy = struct {
+    disabled_families: []const []const u8 = &.{},
+};
+
 pub const ClarkMetadata = struct {
     response_id: []const u8,
     conversation_id: []const u8,
     run_id: []const u8,
     status: []const u8,
     artifacts: []const Artifact = &.{},
+    execution_mode: ?[]const u8 = null,
+    tool_owner: ?[]const u8 = null,
+    retrievable: ?bool = null,
+    requested_model: ?[]const u8 = null,
+    resolved_catalog_model: ?[]const u8 = null,
+    routing_provenance: ?std.json.Value = null,
+    rate_card_revision: ?[]const u8 = null,
+    response_sha256: ?[]const u8 = null,
+    agent_tool_policy: AgentToolPolicy = .{},
 };
 
 // ---------------------------------------------------------------------
@@ -282,6 +328,7 @@ pub const ResponseObject = struct {
     created_at: i64,
     model: []const u8,
     previous_response_id: ?[]const u8 = null,
+    agent_tool_policy: ?AgentToolPolicy = null,
     background: bool = false,
     output: []const OutputItem = &.{},
     artifacts: []const Artifact = &.{},
@@ -424,6 +471,7 @@ pub const ResponseCreateRequest = struct {
     conversation_id: ?[]const u8 = null,
     memory_scope: ?[]const u8 = null,
     previous_response_id: ?[]const u8 = null,
+    agent_tool_policy: ?AgentToolPolicy = null,
     stream: bool = false,
     background: bool = false,
     metadata: ?std.json.Value = null,

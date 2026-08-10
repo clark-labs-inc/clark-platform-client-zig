@@ -4,7 +4,7 @@
 //! Usage:
 //!   CLARK_API_BASE_URL=https://www.clarkchat.com \
 //!   CLARK_API_KEY=ck_live_xxx \
-//!   CLARK_TEST_MODEL=openrouter:qwen35_flash \
+//!   CLARK_TEST_MODEL=openrouter:qwen37_flash \
 //!   zig build live-smoke
 const std = @import("std");
 const clark_platform = @import("clark_platform");
@@ -28,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("CLARK_API_KEY not set; skipping live smoke test.\n", .{});
         return;
     };
-    const model = env.get("CLARK_TEST_MODEL") orelse "openrouter:qwen35_flash";
+    const model = env.get("CLARK_TEST_MODEL") orelse "openrouter:qwen37_flash";
 
     const client = try clark_platform.Client.create(gpa, .{
         .base_url = base_url,

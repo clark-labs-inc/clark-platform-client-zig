@@ -1,6 +1,6 @@
 .{
     .name = .clark_platform,
-    .version = "0.2.0",
+    .version = "0.3.0",
     .fingerprint = 0x786b05471f9a2c89,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},

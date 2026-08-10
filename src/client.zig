@@ -256,6 +256,14 @@ pub const Client = struct {
         return self.requestJson(types.ModelsList, .GET, url, null);
     }
 
+    pub fn estimateUsage(self: *Client, request: types.UsageEstimateRequest) !ApiResult(types.UsageEstimate) {
+        const url = try self.buildUrl("/v1/usage/estimate");
+        defer self.allocator.free(url);
+        const body = try std.json.Stringify.valueAlloc(self.allocator, request, .{});
+        defer self.allocator.free(body);
+        return self.requestJson(types.UsageEstimate, .POST, url, body);
+    }
+
     // -------------------------------------------------------------
     // POST/GET/DELETE /v1/files
     // -------------------------------------------------------------
@@ -394,6 +402,15 @@ pub const Client = struct {
         const body = try std.json.Stringify.valueAlloc(self.allocator, request, .{});
         defer self.allocator.free(body);
         return self.requestJson(types.ResponseObject, .POST, url, body);
+    }
+
+    pub fn createResponseIdempotent(self: *Client, request: types.ResponseCreateRequest, key: []const u8) !ApiResult(types.ResponseObject) {
+        const url = try self.buildUrl("/v1/responses");
+        defer self.allocator.free(url);
+        const body = try std.json.Stringify.valueAlloc(self.allocator, request, .{});
+        defer self.allocator.free(body);
+        const headers = [_]std.http.Header{.{ .name = "idempotency-key", .value = key }};
+        return self.requestBodyJson(types.ResponseObject, .POST, url, body, "application/json", &headers);
     }
 
     pub fn getResponse(self: *Client, response_id: []const u8) !ApiResult(types.ResponseObject) {

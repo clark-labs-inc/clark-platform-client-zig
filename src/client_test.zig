@@ -108,7 +108,7 @@ fn freeFixtures(allocator: std.mem.Allocator, fixtures: []Fixture) void {
 // ---------------------------------------------------------------------
 
 const models_body =
-    \\{"object":"list","data":[{"id":"clark","object":"model","owned_by":"clark","clark":{"tier_id":"clark","label":"Clark","description":"desc","context_window_tokens":1048576,"max_output_tokens":65536,"pricing":{"currency":"USD","unit":"per_million_tokens","input":0.25,"output":1.5,"cache_write":0.08333,"cache_read":0.025},"capabilities":{"public_input_modalities":["text"],"model_input_modalities":["text","image"],"output_modalities":["text","artifact"],"features":["agent_tools","artifacts"],"public_file_upload":false},"model_options":[{"id":"openrouter:qwen36_flash","object":"model","owned_by":"clark","clark":{"tier_id":"openrouter","label":"OpenRouter"}}]}}]}
+    \\{"object":"list","data":[{"id":"clark","object":"model","owned_by":"clark","clark":{"tier_id":"clark","label":"Clark","description":"desc","context_window_tokens":1048576,"max_output_tokens":65536,"pricing":{"currency":"USD","unit":"per_million_tokens","input":0.25,"output":1.5,"cache_write":0.08333,"cache_read":0.025},"capabilities":{"public_input_modalities":["text"],"model_input_modalities":["text","image"],"output_modalities":["text","artifact"],"features":["agent_tools","artifacts"],"public_file_upload":false},"model_options":[{"id":"openrouter:qwen37_flash","object":"model","owned_by":"clark","clark":{"tier_id":"openrouter","label":"OpenRouter"}}]}}]}
 ;
 
 fn httpResponse(allocator: std.mem.Allocator, status_line: []const u8, content_type: []const u8, body: []const u8) ![]u8 {
@@ -135,7 +135,7 @@ test "listModels sends bearer auth and parses the models list" {
                     try testing.expectEqualStrings("Clark", parsed.value.data[0].clark.label);
                     try testing.expectEqual(@as(f64, 0.25), parsed.value.data[0].clark.pricing.?.input);
                     try testing.expectEqual(@as(usize, 1), parsed.value.data[0].clark.model_options.len);
-                    try testing.expectEqualStrings("openrouter:qwen36_flash", parsed.value.data[0].clark.model_options[0].id);
+                    try testing.expectEqualStrings("openrouter:qwen37_flash", parsed.value.data[0].clark.model_options[0].id);
                 },
                 .api_error => return error.UnexpectedApiError,
             }
@@ -460,7 +460,7 @@ test "getRepositoryContext encodes the fingerprint and search query" {
 test "error envelope on 4xx is captured distinctly from transport errors" {
     const allocator = testing.allocator;
     const body =
-        \\{"error":{"message":"Missing or invalid Authorization header.","type":"authentication_error","param":null,"code":"authentication_error"}}
+        \\{"error":{"message":"The original request is still in progress.","type":"idempotency_in_progress","param":"idempotency-key","code":"idempotency_in_progress","response_id":"resp_stable"},"response_id":"resp_stable"}
     ;
     const resp = try httpResponse(allocator, "401 Unauthorized", "application/json", body);
     defer allocator.free(resp);
@@ -475,12 +475,14 @@ test "error envelope on 4xx is captured distinctly from transport errors" {
             switch (result) {
                 .ok => return error.ExpectedApiError,
                 .api_error => |parsed| {
-                    try testing.expectEqualStrings("authentication_error", parsed.value.@"error".@"type");
+                    try testing.expectEqualStrings("idempotency_in_progress", parsed.value.@"error".@"type");
                     try testing.expectEqualStrings(
-                        "Missing or invalid Authorization header.",
+                        "The original request is still in progress.",
                         parsed.value.@"error".message,
                     );
-                    try testing.expectEqual(@as(?[]const u8, null), parsed.value.@"error".param);
+                    try testing.expectEqualStrings("idempotency-key", parsed.value.@"error".param.?);
+                    try testing.expectEqualStrings("resp_stable", parsed.value.@"error".response_id.?);
+                    try testing.expectEqualStrings("resp_stable", parsed.value.response_id.?);
                 },
             }
         }
